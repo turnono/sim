@@ -1,0 +1,18 @@
+<div class="home-container">
+    <section class="hero">
+        <h1>Welcome to Angular 19</h1>
+        <p>This is a standalone Angular application built with Angular 19</p>
+    </section>
+
+    <section class="features">
+        <h2>Key Features</h2>
+        <div class="feature-grid">
+            @for (feature of features; track feature.title) {
+            <div class="feature-card">
+                <h3>{{ feature.title }}</h3>
+                <p>{{ feature.description }}</p>
+            </div>
+            }
+        </div>
+    </section>
+</div>

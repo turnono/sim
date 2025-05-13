@@ -1,10 +1,8 @@
 import os
 
 import uvicorn
-from fastapi import FastAPI, Request, Response, status, Query
+from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
-from pydantic import BaseModel
-from typing import Any, Dict, List, Optional
 
 IS_DEV_MODE = os.getenv("ENV").lower() == "development"
 DEPLOYED_CLOUD_SERVICE_URL = os.getenv("DEPLOYED_CLOUD_SERVICE_URL")
@@ -16,7 +14,7 @@ AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Example session DB URL (e.g., SQLite)
 SESSION_DB_URL = "sqlite:///./sessions.db"
 # Example allowed origins for CORS
-ALLOWED_ORIGINS = ["https://tjr-scheduler.web.app", DEPLOYED_CLOUD_SERVICE_URL]
+ALLOWED_ORIGINS = ["https://tjr-sim-guide.web.app", DEPLOYED_CLOUD_SERVICE_URL]
 # Set web=True if you intend to serve a web interface, False otherwise
 SERVE_WEB_INTERFACE = False
 
