@@ -1,0 +1,22 @@
+.env
+__pycache__/
+.venv/
+.env.*
+*.env
+env/
+env.*
+# Ignore all environment variable files and folders
+
+frontend/dist/
+frontend/node_modules/
+.firebase/
+.vscode/
+
+
+taajirah-agents-service-account.json
+client_secret_*.json
+
+sessions.db
+firestore-debug.log
+firebase-debug.log
+ui-debug.log
