@@ -1,4 +1,13 @@
-google-adk
+google-adk[vertexai]
 google-cloud-firestore
 dateparser
 pydantic
+google-genai
+google-cloud-storage
+google-cloud-aiplatform[reasoningengine]
+vertexai
+cloudpickle
+sqlalchemy>=2.0.0
+python-dotenv==1.1.0
+google-generativeai
+litellm

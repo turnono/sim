@@ -20,3 +20,4 @@ sessions.db
 firestore-debug.log
 firebase-debug.log
 ui-debug.log
+local_sessions.db

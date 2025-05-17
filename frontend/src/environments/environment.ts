@@ -5,7 +5,7 @@ export const environment = {
   production: false,
   ownerFullName: 'Abdullah Abrahams',
   apiUrl: {
-    agentService: 'http://localhost:8000', // Local development API
+    agentService: 'http://localhost:8080', // Local development API
   },
   firebase: {
     projectId: 'taajirah',
