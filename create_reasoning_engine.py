@@ -29,7 +29,7 @@ root_agent = Agent(
 def create() -> None:
     """Creates a new deployment."""
 
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "taajirah-agents-service-account.json"
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "deployment/taajirah-agents-service-account.json"
 
 
     vertexai.init(

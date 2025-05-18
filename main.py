@@ -16,15 +16,19 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from sim_guide_agent.agent import initialize_session_state, create_agent
 from sim_guide_agent.tools import add_reminder_tool, view_reminders_tool, update_preference_tool, get_preferences_tool, session_summary_tool
+from config.settings import get_settings
+from config.database import get_db
 
+# Load environment variables
 load_dotenv()
 
-
-IS_DEV_MODE = os.getenv("ENV", "").lower() == "development"
-APP_NAME = os.getenv('AGENT_APP_NAME')
+# Get application settings
+settings = get_settings()
+APP_NAME = settings.app_name
+IS_DEV_MODE = settings.is_dev_mode
 DEPLOYED_CLOUD_SERVICE_URL = os.getenv("DEPLOYED_CLOUD_SERVICE_URL")
 
-print(f"Environment: {'Development' if IS_DEV_MODE else 'Production'}")
+print(f"Environment: {'Development' if IS_DEV_MODE else 'Production'} (ENV={os.getenv('ENV', 'Not set')})")
 print(f"DEPLOYED_CLOUD_SERVICE_URL: {DEPLOYED_CLOUD_SERVICE_URL}")
 
 # Get the directory where main.py is located
@@ -37,8 +41,8 @@ if IS_DEV_MODE and "REASONING_ENGINE_ID" in os.environ:
 
 # Set default environment variables required for Vertex AI in production
 if not IS_DEV_MODE:
-    os.environ["GOOGLE_CLOUD_PROJECT"] = os.getenv("GOOGLE_CLOUD_PROJECT")
-    os.environ["GOOGLE_CLOUD_LOCATION"] = os.getenv("GOOGLE_CLOUD_LOCATION")
+    os.environ["GOOGLE_CLOUD_PROJECT"] = settings.cloud_project or os.getenv("GOOGLE_CLOUD_PROJECT")
+    os.environ["GOOGLE_CLOUD_LOCATION"] = settings.cloud_location or os.getenv("GOOGLE_CLOUD_LOCATION")
     
     # Using the correct service account file that exists in the directory
     service_account_path = os.path.join(AGENT_DIR, "taajirah-agents-service-account.json")
@@ -49,24 +53,16 @@ if not IS_DEV_MODE:
         print(f"WARNING: Service account file not found at {service_account_path}")
         print("Authentication may fail. Please make sure the service account file exists.")
 
-    # Use Vertex AI Reasoning Engine for session storage in production
-    REASONING_ENGINE_ID = os.getenv("REASONING_ENGINE_ID")
-    SESSION_DB_URL = f"agentengine://{REASONING_ENGINE_ID}"
-    print(f"Using Vertex AI Reasoning Engine for session storage: {SESSION_DB_URL}")
-else:
-    # Use SQLite for local development
-    db_file = os.path.join(AGENT_DIR, "local_sessions.db")
-    SESSION_DB_URL = f"sqlite:///{db_file}"
-    print(f"Using SQLite for local development: {SESSION_DB_URL}")
+# Get database connection
+db = get_db()
+SESSION_DB_URL = db.get_connection_string()
+print(f"Using database: {SESSION_DB_URL} ({'SQLite' if db.is_dev else 'Reasoning Engine'})")
 
 # Example allowed origins for CORS
-ALLOWED_ORIGINS = ["https://tjr-sim-guide.web.app", DEPLOYED_CLOUD_SERVICE_URL]
-if IS_DEV_MODE:
-    # Add localhost to allowed origins in development
-    ALLOWED_ORIGINS.extend(["http://localhost:4200", "http://localhost:8080", "http://localhost:8000"])
+ALLOWED_ORIGINS = settings.allowed_origins
 
 # Set web=True if you intend to serve a web interface, False otherwise
-SERVE_WEB_INTERFACE = False
+SERVE_WEB_INTERFACE = settings.serve_web_interface
 
 # Function to get the SessionService from the FastAPI app
 def get_session_service(app: FastAPI) -> SessionService:
@@ -413,19 +409,100 @@ def create_app():
         Simple health check endpoint for CI/CD and monitoring
         """
         return {"status": "ok", "env": os.getenv("ENV", "unknown")}
+        
+    @app.get("/db-health")
+    async def db_health_check():
+        """Database health check endpoint"""
+        from utils.db_utils import check_db_connection
+        
+        # Only available in development mode for security reasons
+        if not settings.is_dev_mode:
+            return {"status": "Database health check only available in development mode"}
+        
+        db_status = check_db_connection()
+        return {"status": "ok" if db_status.get("connected") else "error", "details": db_status}
+    
+    @app.get("/dev/db-info")
+    async def db_info():
+        """Development-only endpoint to show database information"""
+        from utils import get_db_sessions, get_session_events
+        
+        # Only available in development mode for security reasons
+        if not settings.is_dev_mode:
+            return {"status": "error", "message": "This endpoint is only available in development mode"}
+        
+        try:
+            # Get recent sessions
+            sessions = get_db_sessions(limit=5)
+            
+            # Check if there was an error getting sessions
+            if sessions and isinstance(sessions, list) and len(sessions) > 0 and "error" in sessions[0]:
+                return {"status": "error", "message": f"Error getting sessions: {sessions[0].get('error')}"}
+            
+            # Get events for each session (limited to 3 per session)
+            session_data = []
+            for session in sessions:
+                try:
+                    if isinstance(session, dict):
+                        app_name = session.get("app_name")
+                        user_id = session.get("user_id")
+                        session_id = session.get("id")
+                        
+                        if app_name and user_id and session_id:
+                            events = get_session_events(app_name, user_id, session_id, limit=3)
+                            
+                            # Serialize the state to a string if it's not already
+                            if "state" in session and not isinstance(session["state"], str):
+                                import json
+                                try:
+                                    session["state"] = json.dumps(session["state"])
+                                except:
+                                    session["state"] = str(session["state"])
+                            
+                            session_data.append({
+                                "session": {
+                                    "app_name": app_name,
+                                    "user_id": user_id,
+                                    "session_id": session_id,
+                                    "created": session.get("create_time"),
+                                    "updated": session.get("update_time")
+                                },
+                                "events_count": len(events)
+                            })
+                except Exception as session_error:
+                    session_data.append({
+                        "error": str(session_error),
+                        "session": session
+                    })
+            
+            return {
+                "status": "ok",
+                "data": {
+                    "sessions_count": len(sessions),
+                    "sessions": session_data
+                }
+            }
+        except Exception as e:
+            import traceback
+            return {
+                "status": "error", 
+                "message": str(e),
+                "traceback": traceback.format_exc()
+            }
     
     @app.get("/config")
     async def get_config():
         """
         Return the current configuration for debugging
         """
+        db = get_db()
         return {
-            "environment": "development" if IS_DEV_MODE else "production",
-            "session_storage": "sqlite" if IS_DEV_MODE else "vertex_ai",
-            "session_db_url": SESSION_DB_URL,
-            "reasoning_engine_id": os.getenv("REASONING_ENGINE_ID") if not IS_DEV_MODE else None,
-            "allowed_origins": ALLOWED_ORIGINS,
-            "app_name": APP_NAME
+            "environment": "development" if settings.is_dev_mode else "production",
+            "session_storage": "sqlite" if db.is_dev else "vertex_ai",
+            "session_db_url": db.url,
+            "reasoning_engine_id": settings.reasoning_engine_id,
+            "allowed_origins": settings.allowed_origins,
+            "app_name": settings.app_name
         }
     
     # Direct API endpoints for tool testing
