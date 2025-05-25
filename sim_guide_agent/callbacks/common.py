@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.tools import BaseTool, ToolContext
 from google.genai import types
 
 # Constants

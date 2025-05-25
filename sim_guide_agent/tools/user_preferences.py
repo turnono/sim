@@ -34,18 +34,12 @@ class UpdateUserPreferenceTool(BaseTool):
         Returns:
             Dict with status information about the update
         """
-        if IS_DEV_MODE:
-            print(f"--- Tool: update_user_preference called for '{preference_name}' with value '{preference_value}' ---")
-            
         # Always prefix user preferences with "user:"
         state_key = f"user:{preference_name}"
         
         # Check if there's a change
         old_value = tool_context.state.get(state_key, None)
         if old_value == preference_value:
-            if IS_DEV_MODE:
-                print(f"--- No change needed for '{preference_name}', value already set to '{preference_value}' ---")
-                
             return {
                 "action": "update_user_preference",
                 "status": "unchanged",
@@ -58,9 +52,6 @@ class UpdateUserPreferenceTool(BaseTool):
         tool_context.state[state_key] = preference_value
         tool_context.state["temp:last_preference_update"] = time.time()
         
-        if IS_DEV_MODE:
-            print(f"--- Updated '{preference_name}' from '{old_value}' to '{preference_value}' ---")
-            
         return {
             "action": "update_user_preference",
             "status": "updated",
@@ -93,9 +84,6 @@ class GetUserPreferencesTool(BaseTool):
         Returns:
             Dict with all user preferences
         """
-        if IS_DEV_MODE:
-            print(f"--- Tool: get_user_preferences called ---")
-            
         # Get all state keys that start with "user:"
         preferences = {
             k.replace("user:", ""): v 
@@ -106,9 +94,6 @@ class GetUserPreferencesTool(BaseTool):
         # Update state directly
         tool_context.state["temp:last_preferences_access"] = time.time()
         
-        if IS_DEV_MODE:
-            print(f"--- Found {len(preferences)} user preferences ---")
-            
         return {
             "action": "get_user_preferences",
             "status": "success",

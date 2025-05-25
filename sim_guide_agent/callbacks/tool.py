@@ -5,12 +5,14 @@ Tool callbacks for the Simulation Life Guide Agent.
 from sim_guide_agent.callbacks.common import *
 
 
-def before_tool_callback(callback_context: CallbackContext, tool_name: str = None, tool_args: Dict[str, Any] = None) -> None:
+def before_tool_callback(
+    tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext
+        ) -> Optional[Dict]:
     """
     Callback executed before each tool invocation.
     
     Args:
-        callback_context: Contains state and context information
+        tool_context: Contains state and context information
         tool_name: Name of the tool being invoked
         tool_args: Arguments passed to the tool
         
@@ -18,7 +20,7 @@ def before_tool_callback(callback_context: CallbackContext, tool_name: str = Non
         None to continue with normal tool execution
     """
     # Direct state access
-    state = callback_context.state
+    state = tool_context.state
     
     # Track tool usage in state
     tool_count = state.get("temp:tool_invocation_count", 0) + 1
@@ -38,12 +40,14 @@ def before_tool_callback(callback_context: CallbackContext, tool_name: str = Non
     return None
 
 
-def after_tool_callback(callback_context: CallbackContext, tool_name: str = None, tool_result: Dict[str, Any] = None) -> None:
+def after_tool_callback(
+    tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, tool_response: Dict
+    ) -> Optional[Dict]:
     """
     Callback executed after each tool invocation completes.
     
     Args:
-        callback_context: Contains state and context information
+        tool_context: Contains state and context information
         tool_name: Name of the tool that was invoked
         tool_result: Result returned by the tool
         
@@ -51,7 +55,7 @@ def after_tool_callback(callback_context: CallbackContext, tool_name: str = None
         None to continue with normal processing
     """
     # Direct state access
-    state = callback_context.state
+    state = tool_context.state
     
     # Track the last tool result in state
     state["temp:last_tool_result"] = tool_result

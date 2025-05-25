@@ -4,184 +4,137 @@ Tools for managing reminders in the simulation guide agent.
 
 from sim_guide_agent.tools.common import *
 
+# Reminder data structures and utilities
+def create_reminder(text: str, **kwargs) -> Dict[str, Any]:
+    """Create a standardized reminder object."""
+    reminder = {
+        "id": f"reminder_{int(time.time() * 1000)}",
+        "text": text,
+        "created_at": time.time(),
+        "completed": False,
+        "priority": kwargs.get("priority", "medium"),
+        "due_date": kwargs.get("due_date"),
+        "tags": kwargs.get("tags", [])
+    }
+    return reminder
+
+def format_reminder_for_display(reminder: Dict[str, Any], index: int = None) -> str:
+    """Format a reminder for user-friendly display."""
+    if isinstance(reminder, str):
+        return f"{index}. {reminder}" if index else reminder
+    
+    text = reminder.get("text", "No text")
+    completed = "✅" if reminder.get("completed", False) else "❌"
+    priority = reminder.get("priority", "medium")
+    
+    display = f"{index}. {text} {completed}" if index else f"{text} {completed}"
+    
+    if priority != "medium":
+        display += f" [Priority: {priority}]"
+    
+    return display
 
 class AddReminderTool(BaseTool):
-    """
-    Add a reminder to the user's list.
-    Demonstrates adding to a list in state.
-    """
+    """Add a new reminder to the user's reminder list."""
     
     def __init__(self):
         super().__init__(
             name="add_reminder",
-            description="Add a reminder to the user's list."
+            description="Add a new reminder to the user's reminder list with optional metadata like priority and due date."
         )
     
     def run(
         self, 
-        reminder: str, 
-        tool_context: ToolContext
+        tool_context: ToolContext,
+        reminder_text: str,
+        priority: str = "medium",
+        due_date: str = None
     ) -> Dict[str, Any]:
-        """
-        Add a reminder to the user's list.
+        """Add a new reminder to the user's list."""
         
-        Args:
-            reminder: Text of the reminder to add
-            tool_context: Provides access to session state
-            
-        Returns:
-            Dict with status information about the update
-        """
-        if IS_DEV_MODE:
-            print(f"--- Tool: add_reminder called with '{reminder}' ---")
-            
-        # Get current reminders or initialize if not exists
+        # Get current reminders
         reminders = tool_context.state.get("user:reminders", [])
         
-        # Add the new reminder in a structured format
-        new_reminder = {
-            "text": reminder,
-            "created_at": time.time(),
-            "date_added": datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M"),
-            "completed": False
-        }
+        # Create new reminder with metadata
+        new_reminder = create_reminder(
+            text=reminder_text,
+            priority=priority,
+            due_date=due_date
+        )
         
+        # Add to list
         reminders.append(new_reminder)
         
-        # Update state directly
+        # Update state
         tool_context.state["user:reminders"] = reminders
         tool_context.state["temp:last_reminder_update"] = time.time()
         
-        if IS_DEV_MODE:
-            print(f"--- Added new reminder: '{reminder}'. Now have {len(reminders)} reminders ---")
-            
         return {
             "action": "add_reminder",
             "status": "success",
-            "message": f"Added new reminder: '{reminder}'",
-            "reminder": reminder,
-            "count": len(reminders),
-            "reminder_index": len(reminders)  # 1-based index for the user
+            "message": f"Added reminder: '{reminder_text}'",
+            "reminder": new_reminder,
+            "total_reminders": len(reminders)
         }
 
-
 class ViewRemindersTools(BaseTool):
-    """
-    View all reminders in the user's list.
-    Demonstrates accessing list data from state.
-    """
+    """View all current reminders."""
     
     def __init__(self):
         super().__init__(
             name="view_reminders",
-            description="View all reminders in the user's list."
+            description="View all current reminders in the user's list."
         )
     
     def run(self, tool_context: ToolContext) -> Dict[str, Any]:
-        """
-        View all reminders in the user's list.
+        """View all current reminders."""
         
-        Args:
-            tool_context: Provides access to session state
-            
-        Returns:
-            Dict with all reminders
-        """
-        if IS_DEV_MODE:
-            print(f"--- Tool: view_reminders called ---")
-            
         # Get current reminders
         reminders = tool_context.state.get("user:reminders", [])
         
-        # Calculate some metrics about reminders
-        completed_count = 0
-        active_count = 0
+        # Update access time
+        tool_context.state["temp:last_reminder_access"] = time.time()
         
-        # Process reminders to ensure all have a consistent structure
-        processed_reminders = []
+        if not reminders:
+            return {
+                "action": "view_reminders",
+                "status": "empty",
+                "message": "You don't have any reminders yet.",
+                "reminders": [],
+                "total_reminders": 0
+            }
         
-        for i, reminder in enumerate(reminders):
-            if isinstance(reminder, str):
-                # Convert legacy string reminders to the structured format
-                processed_reminder = {
-                    "text": reminder,
-                    "index": i + 1,  # 1-based for user
-                    "created_at": None,  # We don't know when it was created
-                    "date_added": "Unknown",
-                    "completed": False,
-                    "status": "active"
-                }
-                active_count += 1
-            else:
-                # Process structured reminders
-                is_completed = reminder.get("completed", False)
-                processed_reminder = {
-                    "text": reminder.get("text", ""),
-                    "index": i + 1,  # 1-based for user
-                    "created_at": reminder.get("created_at"),
-                    "date_added": reminder.get("date_added", "Unknown"),
-                    "completed": is_completed,
-                    "status": "completed" if is_completed else "active"
-                }
-                
-                if is_completed:
-                    completed_count += 1
-                else:
-                    active_count += 1
-                    
-            processed_reminders.append(processed_reminder)
-            
-        # Update state directly
-        tool_context.state["temp:last_reminders_access"] = time.time()
+        # Format reminders for display
+        formatted_reminders = []
+        for i, reminder in enumerate(reminders, 1):
+            formatted_reminders.append(format_reminder_for_display(reminder, i))
         
-        if IS_DEV_MODE:
-            print(f"--- Found {len(reminders)} reminders ({active_count} active, {completed_count} completed) ---")
-            
         return {
             "action": "view_reminders",
             "status": "success",
-            "message": f"Retrieved {len(reminders)} reminders ({active_count} active, {completed_count} completed)",
-            "reminders": processed_reminders,
-            "counts": {
-                "total": len(reminders),
-                "active": active_count,
-                "completed": completed_count
-            }
+            "message": f"You have {len(reminders)} reminder(s):",
+            "reminders": reminders,
+            "formatted_reminders": formatted_reminders,
+            "total_reminders": len(reminders)
         }
 
-
 class UpdateReminderTool(BaseTool):
-    """
-    Update the text of a reminder.
-    Demonstrates updating an item in a list within state.
-    """
+    """Update an existing reminder by position or partial text match."""
     
     def __init__(self):
         super().__init__(
             name="update_reminder",
-            description="Update the text of a reminder in the user's list."
+            description="Update an existing reminder by specifying its position (1st, 2nd, etc.) or partial text match, and the new text."
         )
     
     def run(
         self, 
-        reminder_reference: str,
-        updated_text: str,
-        tool_context: ToolContext
+        tool_context: ToolContext,
+        reminder_identifier: str,
+        new_text: str
     ) -> Dict[str, Any]:
-        """
-        Update the text of a reminder.
+        """Update an existing reminder."""
         
-        Args:
-            reminder_reference: Reference to the reminder (index as string, "first", "last", or content)
-            updated_text: New text for the reminder
-            tool_context: Provides access to session state
-            
-        Returns:
-            Dict with status information about the update
-        """
-        if IS_DEV_MODE:
-            print(f"--- Tool: update_reminder called with reference '{reminder_reference}' and new text '{updated_text}' ---")
-            
         # Get current reminders
         reminders = tool_context.state.get("user:reminders", [])
         
@@ -189,196 +142,176 @@ class UpdateReminderTool(BaseTool):
             return {
                 "action": "update_reminder",
                 "status": "error",
-                "message": "No reminders found to update",
-                "count": 0
+                "message": "No reminders to update. Add some reminders first.",
+                "total_reminders": 0
             }
         
-        # Determine which reminder to update
-        index = None
+        # Find the reminder to update
+        reminder_index = self._find_reminder_index(reminders, reminder_identifier)
         
-        # Try to parse as a direct index
-        try:
-            # Convert to zero-based for internal use
-            index = int(reminder_reference) - 1
-            if index < 0 or index >= len(reminders):
-                index = None
-        except ValueError:
-            # Not a direct number, try relative positions
-            if reminder_reference.lower() == "first":
-                index = 0
-            elif reminder_reference.lower() == "last":
-                index = len(reminders) - 1
-            elif reminder_reference.lower() == "second" and len(reminders) > 1:
-                index = 1
-            elif reminder_reference.lower() == "third" and len(reminders) > 2:
-                index = 2
-            else:
-                # Try to find by content similarity
-                best_match_score = 0
-                for i, reminder in enumerate(reminders):
-                    reminder_text = reminder.get("text", reminder) if isinstance(reminder, dict) else reminder
-                    # Simple string similarity check
-                    if reminder_reference.lower() in reminder_text.lower():
-                        # If exact substring, high score
-                        score = len(reminder_reference) / len(reminder_text)
-                        if score > best_match_score:
-                            best_match_score = score
-                            index = i
-        
-        if index is None:
+        if reminder_index is None:
             return {
                 "action": "update_reminder",
                 "status": "error",
-                "message": f"Could not find a reminder matching '{reminder_reference}'",
-                "matched_index": None
+                "message": f"Could not find reminder matching '{reminder_identifier}'. Try using position (1st, 2nd, etc.) or partial text.",
+                "total_reminders": len(reminders)
             }
-        
-        # Get the reminder to update
-        old_reminder = reminders[index]
-        old_text = old_reminder.get("text", old_reminder) if isinstance(old_reminder, dict) else old_reminder
         
         # Update the reminder
-        if isinstance(old_reminder, dict):
-            reminders[index]["text"] = updated_text
-            # Keep other properties like created_at
+        old_reminder = reminders[reminder_index].copy()
+        if isinstance(reminders[reminder_index], dict):
+            reminders[reminder_index]["text"] = new_text
+            reminders[reminder_index]["updated_at"] = time.time()
         else:
             # Convert string reminder to dict format
-            reminders[index] = {
-                "text": updated_text,
-                "created_at": time.time(),
-                "date_added": datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M"),
-                "completed": False
-            }
+            reminders[reminder_index] = create_reminder(new_text)
         
         # Update state
         tool_context.state["user:reminders"] = reminders
         tool_context.state["temp:last_reminder_update"] = time.time()
         
-        if IS_DEV_MODE:
-            print(f"--- Updated reminder at index {index+1} from '{old_text}' to '{updated_text}' ---")
-            
+        old_text = old_reminder.get("text", old_reminder) if isinstance(old_reminder, dict) else old_reminder
+        
         return {
             "action": "update_reminder",
-            "status": "success",
-            "message": f"Updated reminder from '{old_text}' to '{updated_text}'",
-            "old_text": old_text,
-            "new_text": updated_text,
-            "matched_index": index + 1  # Return 1-based index for user
+            "status": "success", 
+            "message": f"Updated reminder {reminder_index + 1}: '{old_text}' → '{new_text}'",
+            "old_reminder": old_reminder,
+            "new_reminder": reminders[reminder_index],
+            "total_reminders": len(reminders)
         }
-
+    
+    def _find_reminder_index(self, reminders: List, identifier: str) -> int:
+        """Find reminder index by position or text match."""
+        identifier_lower = identifier.lower()
+        
+        # Try position-based matching first (1st, 2nd, first, second, last, etc.)
+        position_map = {
+            "1st": 0, "first": 0, "1": 0,
+            "2nd": 1, "second": 1, "2": 1,
+            "3rd": 2, "third": 2, "3": 2,
+            "4th": 3, "fourth": 3, "4": 3,
+            "5th": 4, "fifth": 4, "5": 4,
+            "last": len(reminders) - 1,
+            "latest": len(reminders) - 1,
+            "newest": len(reminders) - 1
+        }
+        
+        if identifier_lower in position_map:
+            index = position_map[identifier_lower]
+            if 0 <= index < len(reminders):
+                return index
+        
+        # Try partial text matching
+        for i, reminder in enumerate(reminders):
+            reminder_text = reminder.get("text", reminder) if isinstance(reminder, dict) else reminder
+            if identifier_lower in reminder_text.lower():
+                return i
+        
+        return None
 
 class CompleteReminderTool(BaseTool):
-    """
-    Mark a reminder as completed.
-    Demonstrates updating a property in a state item.
-    """
+    """Mark a reminder as completed or remove it."""
     
     def __init__(self):
         super().__init__(
             name="complete_reminder",
-            description="Mark a reminder as completed in the user's list."
+            description="Mark a reminder as completed or remove it from the list by specifying its position or partial text match."
         )
     
     def run(
         self, 
-        reminder_reference: str,
-        tool_context: ToolContext
+        tool_context: ToolContext,
+        reminder_identifier: str,
+        action: str = "complete"
     ) -> Dict[str, Any]:
-        """
-        Mark a reminder as completed.
+        """Complete or remove a reminder."""
         
-        Args:
-            reminder_reference: Reference to the reminder (index as string, "first", "last", or content)
-            tool_context: Provides access to session state
-            
-        Returns:
-            Dict with status information about the update
-        """
-        if IS_DEV_MODE:
-            print(f"--- Tool: complete_reminder called with reference '{reminder_reference}' ---")
-            
         # Get current reminders
         reminders = tool_context.state.get("user:reminders", [])
         
         if not reminders:
             return {
-                "action": "complete_reminder",
+                "action": "complete_reminder", 
                 "status": "error",
-                "message": "No reminders found to mark as completed",
-                "count": 0
+                "message": "No reminders to complete. Add some reminders first.",
+                "total_reminders": 0
             }
         
-        # Determine which reminder to update - same logic as in UpdateReminderTool
-        index = None
+        # Find the reminder
+        reminder_index = self._find_reminder_index(reminders, reminder_identifier)
         
-        # Try to parse as a direct index
-        try:
-            # Convert to zero-based for internal use
-            index = int(reminder_reference) - 1
-            if index < 0 or index >= len(reminders):
-                index = None
-        except ValueError:
-            # Not a direct number, try relative positions
-            if reminder_reference.lower() == "first":
-                index = 0
-            elif reminder_reference.lower() == "last":
-                index = len(reminders) - 1
-            elif reminder_reference.lower() == "second" and len(reminders) > 1:
-                index = 1
-            elif reminder_reference.lower() == "third" and len(reminders) > 2:
-                index = 2
-            else:
-                # Try to find by content similarity
-                best_match_score = 0
-                for i, reminder in enumerate(reminders):
-                    reminder_text = reminder.get("text", reminder) if isinstance(reminder, dict) else reminder
-                    # Simple string similarity check
-                    if reminder_reference.lower() in reminder_text.lower():
-                        # If exact substring, high score
-                        score = len(reminder_reference) / len(reminder_text)
-                        if score > best_match_score:
-                            best_match_score = score
-                            index = i
-        
-        if index is None:
+        if reminder_index is None:
             return {
                 "action": "complete_reminder",
-                "status": "error",
-                "message": f"Could not find a reminder matching '{reminder_reference}'",
-                "matched_index": None
+                "status": "error", 
+                "message": f"Could not find reminder matching '{reminder_identifier}'. Try using position (1st, 2nd, etc.) or partial text.",
+                "total_reminders": len(reminders)
             }
         
-        # Get the reminder to update
-        reminder = reminders[index]
-        reminder_text = reminder.get("text", reminder) if isinstance(reminder, dict) else reminder
+        completed_reminder = reminders[reminder_index]
+        reminder_text = completed_reminder.get("text", completed_reminder) if isinstance(completed_reminder, dict) else completed_reminder
         
-        # Update the reminder
-        if isinstance(reminder, dict):
-            reminders[index]["completed"] = True
+        if action.lower() == "remove":
+            # Remove the reminder
+            reminders.pop(reminder_index)
+            message = f"Removed reminder {reminder_index + 1}: '{reminder_text}'"
+            status_action = "removed"
         else:
-            # Convert string reminder to dict format
-            reminders[index] = {
-                "text": reminder,
-                "created_at": time.time(),
-                "date_added": datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M"),
-                "completed": True
-            }
+            # Mark as completed
+            if isinstance(completed_reminder, dict):
+                completed_reminder["completed"] = True
+                completed_reminder["completed_at"] = time.time()
+            else:
+                # Convert to dict and mark completed
+                reminders[reminder_index] = create_reminder(reminder_text)
+                reminders[reminder_index]["completed"] = True
+                reminders[reminder_index]["completed_at"] = time.time()
+            
+            message = f"Completed reminder {reminder_index + 1}: '{reminder_text}'"
+            status_action = "completed"
         
         # Update state
         tool_context.state["user:reminders"] = reminders
         tool_context.state["temp:last_reminder_update"] = time.time()
         
-        if IS_DEV_MODE:
-            print(f"--- Marked reminder '{reminder_text}' as completed ---")
-            
         return {
             "action": "complete_reminder",
             "status": "success",
-            "message": f"Marked reminder '{reminder_text}' as completed",
-            "reminder_text": reminder_text,
-            "matched_index": index + 1  # Return 1-based index for user
+            "message": message,
+            "reminder": completed_reminder,
+            "action_taken": status_action,
+            "total_reminders": len(reminders)
         }
-
+    
+    def _find_reminder_index(self, reminders: List, identifier: str) -> int:
+        """Find reminder index by position or text match."""
+        identifier_lower = identifier.lower()
+        
+        # Try position-based matching first
+        position_map = {
+            "1st": 0, "first": 0, "1": 0,
+            "2nd": 1, "second": 1, "2": 1, 
+            "3rd": 2, "third": 2, "3": 2,
+            "4th": 3, "fourth": 3, "4": 3,
+            "5th": 4, "fifth": 4, "5": 4,
+            "last": len(reminders) - 1,
+            "latest": len(reminders) - 1,
+            "newest": len(reminders) - 1
+        }
+        
+        if identifier_lower in position_map:
+            index = position_map[identifier_lower] 
+            if 0 <= index < len(reminders):
+                return index
+        
+        # Try partial text matching
+        for i, reminder in enumerate(reminders):
+            reminder_text = reminder.get("text", reminder) if isinstance(reminder, dict) else reminder
+            if identifier_lower in reminder_text.lower():
+                return i
+        
+        return None
 
 # Create instances of the tools
 add_reminder_tool = AddReminderTool()

@@ -12,15 +12,28 @@ frontend/node_modules/
 .firebase/
 .vscode/
 
-
+# Service account and secret files
 taajirah-agents-service-account.json
 client_secret_*.json
 
+# Database files
 sessions.db
 firestore-debug.log
 firebase-debug.log
 ui-debug.log
 local_sessions.db
+
+# Debugging and test files
+*_STATUS.md
+*_REPORT.md
+*_VERIFICATION.md
+MEMORY_STATUS.md
+FINAL_*.md
+test_*.py
+test_*.txt
+memory_uploader.py
+*_debug.py
+*_test.py
 
 deployment/
 

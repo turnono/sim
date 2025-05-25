@@ -27,9 +27,6 @@ class SessionSummaryTool(BaseTool):
         Returns:
             Dict with session state summary
         """
-        if IS_DEV_MODE:
-            print(f"--- Tool: session_summary called ---")
-            
         state = tool_context.state
         
         # Categorize state by prefix
@@ -58,10 +55,6 @@ class SessionSummaryTool(BaseTool):
         tool_context.state["last_summary_time"] = current_time
         tool_context.state["temp:summary_generated"] = True
         
-        if IS_DEV_MODE:
-            print(f"--- Generated session summary with {len(state)} total state entries ---")
-            print(f"--- Session has been running for {duration_formatted} ---")
-            
         return {
             "action": "session_summary",
             "status": "success",

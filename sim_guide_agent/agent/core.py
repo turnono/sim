@@ -15,10 +15,12 @@ This happens as part of the import chain:
 The root_agent is used as a default until session-specific agents are created.
 """
 
+import os
 from typing import Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.sessions import Session
+from google.adk.tools import load_memory
 
 from sim_guide_agent.models import DEFAULT_MODEL
 from sim_guide_agent.prompts import ROOT_AGENT_PROMPT_TEMPLATE
@@ -71,30 +73,8 @@ def create_agent(session: Optional[Session] = None) -> LlmAgent:
         session: Optional session to use for personalizing the agent instructions
         
     Returns:
-        LlmAgent instance configured with state-aware tools and callbacks
+        LlmAgent instance configured with state-aware tools, callbacks, and memory
     """
-    # Log agent creation
-    user_name = DEFAULT_USER_PREFERENCES["user:name"]
-    session_id = None
-    
-    if session:
-        if hasattr(session, 'state'):
-            user_name = session.state.get("user:name", user_name)
-        if hasattr(session, 'id'):
-            session_id = session.id
-        elif hasattr(session, 'session_id'):
-            session_id = session.session_id
-    
-    # If session_id is None, this is likely the initial startup agent
-    is_initial_agent = session_id is None
-    log_message = "INITIAL AGENT CREATION" if is_initial_agent else "AGENT CREATION"
-    
-    log_agent_activity(log_message, {
-        "session_id": session_id or "None",
-        "for_user": user_name,
-        "is_initial_startup": is_initial_agent
-    })
-    
     # Determine the instruction to use (dynamic or default)
     if session and hasattr(session, 'state'):
         instruction = get_dynamic_instruction(session)
@@ -112,13 +92,17 @@ def create_agent(session: Optional[Session] = None) -> LlmAgent:
         instruction=instruction,
         output_key="sim_guide_agent_output",
         tools=[
+            # State management tools
             update_preference_tool, 
             get_preferences_tool, 
             session_summary_tool,
+            # Reminder tools
             add_reminder_tool, 
             view_reminders_tool,
             update_reminder_tool,
-            complete_reminder_tool
+            complete_reminder_tool,
+            # Memory tool for cross-session knowledge retrieval
+            load_memory
         ],
         # Agent-level callbacks
         before_agent_callback=before_agent_callback,

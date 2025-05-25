@@ -1,10 +1,11 @@
 import os
-from typing import Dict, Any
 import time
-import asyncio
+from typing import Dict, Any
+import json
+from datetime import datetime
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.sessions import Session, BaseSessionService as SessionService
 from google.adk.runners import Runner
@@ -13,61 +14,81 @@ from google.genai.types import Content, Part
 from google.adk.events import Event, EventActions
 from pydantic import BaseModel
 
-from dotenv import load_dotenv
+# Import memory service for cross-session knowledge
+from google.adk.memory import VertexAiRagMemoryService
+
 from sim_guide_agent.agent import initialize_session_state, create_agent
 from sim_guide_agent.tools import add_reminder_tool, view_reminders_tool, update_preference_tool, get_preferences_tool, session_summary_tool
 from config.settings import get_settings
-from config.database import get_db
-
-# Load environment variables
-load_dotenv()
 
 # Get application settings
 settings = get_settings()
 APP_NAME = settings.app_name
-IS_DEV_MODE = settings.is_dev_mode
-DEPLOYED_CLOUD_SERVICE_URL = os.getenv("DEPLOYED_CLOUD_SERVICE_URL")
-
-print(f"Environment: {'Development' if IS_DEV_MODE else 'Production'} (ENV={os.getenv('ENV', 'Not set')})")
-print(f"DEPLOYED_CLOUD_SERVICE_URL: {DEPLOYED_CLOUD_SERVICE_URL}")
 
 # Get the directory where main.py is located
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Ensure we don't accidentally use Reasoning Engine locally
-if IS_DEV_MODE and "REASONING_ENGINE_ID" in os.environ:
-    print("WARNING: REASONING_ENGINE_ID is set in development mode.")
-    print("To protect production data, this will be ignored and SQLite will be used instead.")
+# Set environment variables required for Vertex AI
+os.environ["GOOGLE_CLOUD_PROJECT"] = settings.cloud_project
+os.environ["GOOGLE_CLOUD_LOCATION"] = settings.cloud_location
 
-# Set default environment variables required for Vertex AI in production
-if not IS_DEV_MODE:
-    os.environ["GOOGLE_CLOUD_PROJECT"] = settings.cloud_project or os.getenv("GOOGLE_CLOUD_PROJECT")
-    os.environ["GOOGLE_CLOUD_LOCATION"] = settings.cloud_location or os.getenv("GOOGLE_CLOUD_LOCATION")
-    
-    # Using the correct service account file that exists in the directory
-    service_account_path = os.path.join(AGENT_DIR, "taajirah-agents-service-account.json")
-    if os.path.exists(service_account_path):
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = service_account_path
-        print(f"Using service account: {service_account_path}")
-    else:
-        print(f"WARNING: Service account file not found at {service_account_path}")
-        print("Authentication may fail. Please make sure the service account file exists.")
+# Using the service account file
+service_account_path = os.path.join(AGENT_DIR, "taajirah-agents-service-account.json")
+if os.path.exists(service_account_path):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = service_account_path
+else:
+    raise RuntimeError(f"Service account file not found at {service_account_path}")
 
 # Get database connection
-db = get_db()
-SESSION_DB_URL = db.get_connection_string()
-print(f"Using database: {SESSION_DB_URL} ({'SQLite' if db.is_dev else 'Reasoning Engine'})")
+# Use Vertex AI for both session persistence and memory (full Vertex AI integration)
+# According to ADK docs, for VertexAiSessionService, use agentengine:// format
+SESSION_DB_URL = f"agentengine://{settings.reasoning_engine_id}"
 
 # Example allowed origins for CORS
 ALLOWED_ORIGINS = settings.allowed_origins
 
-# Set web=True if you intend to serve a web interface, False otherwise
-SERVE_WEB_INTERFACE = settings.serve_web_interface
+# Custom JSON encoder to handle datetime objects
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+# Configure the ADK to use our custom encoder
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
+from google.adk.sessions.database_session_service import DatabaseSessionService
+
+# Set the default JSON encoder for the entire application
+json._default_encoder = CustomJSONEncoder()
+
+# Monkey-patch json.dumps to use our custom encoder
+original_dumps = json.dumps
+def custom_dumps(*args, **kwargs):
+    if 'cls' not in kwargs:
+        kwargs['cls'] = CustomJSONEncoder
+    return original_dumps(*args, **kwargs)
+json.dumps = custom_dumps
+
+VertexAiSessionService.json_encoder = CustomJSONEncoder
+
+def get_effective_app_name():
+    """Get the app name for the ADK"""
+    # For VertexAiSessionService with agentengine:// URL, the ADK uses the reasoning engine ID as app_name
+    return settings.reasoning_engine_id
 
 # Function to get the SessionService from the FastAPI app
 def get_session_service(app: FastAPI) -> SessionService:
-    """Get the SessionService from the FastAPI app's state"""
-    return app.state.session_service
+    """Get the SessionService from the FastAPI app's state or create one"""
+    if hasattr(app.state, 'session_service'):
+        return app.state.session_service
+    else:
+        # Recreate the session service the same way the ADK does in get_fast_api_app
+        # Since we're using agentengine:// URL, create VertexAiSessionService
+        from google.adk.sessions import VertexAiSessionService
+        return VertexAiSessionService(
+            project=settings.cloud_project,
+            location=settings.cloud_location
+        )
 
 # Helper function to find or create session
 async def find_or_create_session(
@@ -86,9 +107,12 @@ async def find_or_create_session(
     Returns:
         tuple: (session, session_id, is_new_session)
     """
+    # Get the effective app name
+    effective_app_name = get_effective_app_name()
+    
     # Check for existing sessions for this user
     existing_sessions = session_service.list_sessions(
-        app_name=APP_NAME,
+        app_name=effective_app_name,
         user_id=user_id
     )
     
@@ -107,15 +131,14 @@ async def find_or_create_session(
         if session_id:
             try:
                 session = session_service.get_session(
-                    app_name=APP_NAME,
+                    app_name=effective_app_name,
                     user_id=user_id,
                     session_id=session_id
                 )
-                print(f"Using specified session: {session_id}")
                 return session, session_id, False
             except Exception as e:
-                print(f"Specified session not found: {str(e)}")
                 # Continue to create a new session
+                pass
         else:
             # Get the most recent session
             if hasattr(existing_sessions, 'sessions'):
@@ -126,22 +149,22 @@ async def find_or_create_session(
             session_id = getattr(most_recent_session, 'session_id', None) or getattr(most_recent_session, 'id', None)
             if session_id:
                 session = session_service.get_session(
-                    app_name=APP_NAME,
+                    app_name=effective_app_name,
                     user_id=user_id,
                     session_id=session_id
                 )
-                print(f"Using most recent session: {session_id}")
                 return session, session_id, False
     
     # Create a new session if we couldn't find a suitable existing one
-    if not session_id:
-        session_id = f"session_{int(time.time())}"
-    
+    # For VertexAiSessionService, don't specify session_id - let it auto-generate
     session = session_service.create_session(
-        app_name=APP_NAME,
-        user_id=user_id,
-        session_id=session_id
+        app_name=effective_app_name,
+        user_id=user_id
+        # Don't specify session_id for VertexAiSessionService
     )
+    
+    # Get the auto-generated session ID
+    session_id = session.id
     
     # Initialize the new session with our default state
     init_event = initialize_session_state(session)
@@ -150,567 +173,181 @@ async def find_or_create_session(
     
     # Reload the session to get the initialized state
     session = session_service.get_session(
-        app_name=APP_NAME,
+        app_name=effective_app_name,
         user_id=user_id,
         session_id=session_id
     )
     
-    print(f"Created new session: {session_id}")
     return session, session_id, True
 
-# Custom middleware to ensure session state is initialized and personalize agent
-class AgentPersonalizationMiddleware:
-    """
-    Middleware to personalize agent responses based on session state.
-    Ensures state is properly initialized for each session.
-    """
+# Patch the ADK to use our VertexAiRagMemoryService instead of InMemoryMemoryService
+# This must be done before importing get_fast_api_app
+def create_vertex_memory_service():
+    """Create Vertex AI RAG Memory Service using existing RAG corpus."""
+    import os
     
-    def __init__(self, session_service):
-        self.session_service = session_service
+    # Get the RAG corpus resource name from environment
+    rag_corpus = os.getenv("RAG_CORPUS")
     
-    async def __call__(self, session: Session) -> None:
-        """
-        Process a session before it's used by the runner.
+    if not rag_corpus:
+        print("Warning: RAG_CORPUS not configured, falling back to InMemoryMemoryService")
+        from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+        return InMemoryMemoryService()
+    
+    try:
+        # Initialize Vertex AI with proper credentials (same as successful test script)
+        import vertexai
+        from google.oauth2 import service_account
         
-        Args:
-            session: The current session being processed
-        """
-        # Check if this is a new session that needs initialization
-        if not session.state:
-            print(f"Initializing new session: {session.session_id}")
-            # Initialize with default state
-            init_event = initialize_session_state(session)
-            if init_event:
-                self.session_service.append_event(session, init_event)
+        # Use the service account file with explicit scopes
+        service_account_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "taajirah-agents-service-account.json")
         
-        # Return a personalized agent for this session
-        return create_agent(session)
+        # Define comprehensive scopes for Vertex AI operations
+        scopes = [
+            'https://www.googleapis.com/auth/cloud-platform',
+            'https://www.googleapis.com/auth/aiplatform'
+        ]
+        
+        # Create credentials with explicit scopes
+        credentials = service_account.Credentials.from_service_account_file(
+            service_account_path, scopes=scopes
+        )
+        
+        # Initialize Vertex AI with explicit credentials
+        vertexai.init(
+            project=settings.cloud_project,
+            location=settings.cloud_location,
+            credentials=credentials
+        )
+        
+        # Create VertexAiRagMemoryService with optimal settings
+        memory_service = VertexAiRagMemoryService(
+            rag_corpus=rag_corpus,
+            similarity_top_k=5,  # Return top 5 relevant memories
+            vector_distance_threshold=0.7  # Only return memories with 70%+ similarity
+        )
+        return memory_service
+    except Exception as e:
+        from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+        return InMemoryMemoryService()
+
+# Monkey patch the InMemoryMemoryService class before ADK imports it
+import google.adk.memory.in_memory_memory_service
+original_InMemoryMemoryService = google.adk.memory.in_memory_memory_service.InMemoryMemoryService
+
+class PatchedMemoryService:
+    def __new__(cls, *args, **kwargs):
+        return create_vertex_memory_service()
+
+# Replace the class in the module
+google.adk.memory.in_memory_memory_service.InMemoryMemoryService = PatchedMemoryService
+
+# Also patch the import in the CLI module
+import google.adk.cli.fast_api
+google.adk.cli.fast_api.InMemoryMemoryService = PatchedMemoryService
+
+from google.adk.cli.fast_api import get_fast_api_app
 
 def create_app():
     # Create the FastAPI app with a default agent
-    # The actual agent used will be determined by the middleware
     default_agent = create_agent()
     
+    # Create the FastAPI app with session_db_url for VertexAiSessionService
     app: FastAPI = get_fast_api_app(
         agent_dir=AGENT_DIR,
-        session_db_url=SESSION_DB_URL,
+        session_db_url=SESSION_DB_URL,  # This will trigger VertexAiSessionService creation
         allow_origins=ALLOWED_ORIGINS,
-        web=SERVE_WEB_INTERFACE,
+        web=False  # No web interface in production
     )
     
     # Manually set the agent and app_name
     app.state.agent = default_agent
-    app.state.app_name = APP_NAME
+    app.state.app_name = get_effective_app_name()
     
-    # Create and set session service
-    from google.adk.sessions import InMemorySessionService
-    if IS_DEV_MODE:
-        # Use SQLite for local development
-        from google.adk.sessions import DatabaseSessionService
-        session_service = DatabaseSessionService(SESSION_DB_URL)
-    else:
-        # Use Vertex AI Reasoning Engine for production
-        from google.adk.sessions import VertexAiSessionService
-        session_service = VertexAiSessionService(SESSION_DB_URL)
-    
-    # Store session service in app state for custom endpoints
-    app.state.session_service = session_service
-    
-    # Add the agent personalization middleware
-    personalization_middleware = AgentPersonalizationMiddleware(session_service)
-    app.state.adk_middlewares = [personalization_middleware]
-    
-    # Custom endpoint to create a new session with initialized state
-    @app.post("/api/custom/new_session")
-    async def new_session(user_id: str, session_id: str = None):
-        """Create a new session with properly initialized state"""
-        session_service = get_session_service(app)
-        
-        try:
-            # Use the helper function to find or create a session
-            session, actual_session_id, is_new_session = await find_or_create_session(
-                session_service, 
-                user_id, 
-                session_id
-            )
-            
-            return {
-                "status": "success",
-                "message": "New session created" if is_new_session else "Existing session found",
-                "session_id": actual_session_id,
-                "user_id": user_id,
-                "is_new_session": is_new_session,
-                "state_summary": {
-                    # Return a subset of state for confirmation
-                    "is_new_session": session.state.get("is_new_session"),
-                    "user_preferences": {
-                        k.replace("user:", ""): v 
-                        for k, v in session.state.items() 
-                        if k.startswith("user:")
-                    }
-                }
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create/find session: {str(e)}")
-
-    # Endpoint to get user state
-    @app.get("/api/custom/user_state/{user_id}")
-    async def get_user_state(user_id: str):
-        """Get state values for a user across all sessions"""
-        session_service = get_session_service(app)
-        
-        try:
-            # Use the helper function to find an existing session
-            session, session_id, is_new_session = await find_or_create_session(
-                session_service, 
-                user_id
-            )
-            
-            # If we had to create a new session, that means no sessions existed
-            if is_new_session:
-                # We've created a new session with default values
-                message = "No existing sessions found. Created new session with default values."
-            else:
-                message = "Retrieved state from existing session."
-            
-            user_state = {
-                k.replace("user:", ""): v 
-                for k, v in session.state.items() 
-                if k.startswith("user:")
-            }
-            
-            return {
-                "user_id": user_id,
-                "session_id": session_id,
-                "state": user_state,
-                "message": message,
-                "last_active": getattr(session, 'last_update_time', None)
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to get user state: {str(e)}")
-            
-    # Endpoint to update user preferences
-    @app.post("/api/custom/user_preferences")
-    async def update_user_preferences(user_id: str, preferences: Dict[str, Any], session_id: str = None):
-        """Update user preferences in state"""
-        session_service = get_session_service(app)
-        
-        try:
-            # Use the helper function to find or create a session
-            session, actual_session_id, is_new_session = await find_or_create_session(
-                session_service, 
-                user_id,
-                session_id
-            )
-            
-            # Prepare state updates with proper "user:" prefixing
-            state_updates = {
-                f"user:{key}": value for key, value in preferences.items()
-            }
-            
-            # Create an event with these updates
-            actions = EventActions(state_delta=state_updates)
-            update_event = Event(
-                author="system",
-                invocation_id="preference_update",
-                actions=actions,
-                content=Content(parts=[Part(text="User preferences updated")])
-            )
-            
-            # Add the event, which will update the state
-            session_service.append_event(session, update_event)
-            
-            # Get the updated session
-            updated_session = session_service.get_session(
-                app_name=APP_NAME,
-                user_id=user_id,
-                session_id=actual_session_id
-            )
-            
-            # Return the updated preferences from this session
-            updated_preferences = {
-                k.replace("user:", ""): v 
-                for k, v in updated_session.state.items() 
-                if k.startswith("user:")
-            }
-            
-            return {
-                "status": "success",
-                "message": "User preferences updated",
-                "user_id": user_id,
-                "session_id": actual_session_id,
-                "is_new_session": is_new_session,
-                "preferences": updated_preferences
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update preferences: {str(e)}")
-
-    # Add an async endpoint for messaging the agent
-    @app.post("/api/custom/message")
-    async def send_message(user_id: str, message: str, session_id: str = None):
-        """Send a message to the agent and get a response"""
-        session_service = get_session_service(app)
-        
-        try:
-            # Find or create a session for this user
-            session, actual_session_id, is_new_session = await find_or_create_session(
-                session_service, 
-                user_id,
-                session_id
-            )
-            
-            # Create a runner with the personalized agent for this session
-            personalized_agent = create_agent(session)
-            runner = Runner(
-                agent=personalized_agent,
-                app_name=APP_NAME,
-                session_service=session_service,
-            )
-            
-            # Create user message
-            user_message = Content(parts=[Part(text=message)])
-            
-            # Process the message through the runner
-            response_text = None
-            response_events = []
-            
-            # Process events directly using run_async
-            async for event in runner.run_async(
-                user_id=user_id,
-                session_id=actual_session_id,
-                new_message=user_message
-            ):
-                if event.is_final_response() and event.content and event.content.parts:
-                    response_text = event.content.parts[0].text
-                response_events.append(event)
-            
-            # Get the updated session after processing
-            updated_session = session_service.get_session(
-                app_name=APP_NAME,
-                user_id=user_id,
-                session_id=actual_session_id
-            )
-            
-            return {
-                "status": "success",
-                "message": "Message processed",
-                "user_id": user_id,
-                "session_id": actual_session_id,
-                "response": response_text,
-                "state_updated": updated_session.state != session.state,
-                "is_new_session": is_new_session
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to process message: {str(e)}")
-
     @app.get("/healthz")
     async def health_check():
-        """
-        Simple health check endpoint for CI/CD and monitoring
-        """
-        return {"status": "ok", "env": os.getenv("ENV", "unknown")}
-        
-    @app.get("/db-health")
-    async def db_health_check():
-        """Database health check endpoint"""
-        from utils.db_utils import check_db_connection
-        
-        # Only available in development mode for security reasons
-        if not settings.is_dev_mode:
-            return {"status": "Database health check only available in development mode"}
-        
-        db_status = check_db_connection()
-        return {"status": "ok" if db_status.get("connected") else "error", "details": db_status}
-    
-    @app.get("/dev/db-info")
-    async def db_info():
-        """Development-only endpoint to show database information"""
-        from utils import get_db_sessions, get_session_events
-        
-        # Only available in development mode for security reasons
-        if not settings.is_dev_mode:
-            return {"status": "error", "message": "This endpoint is only available in development mode"}
-        
-        try:
-            # Get recent sessions
-            sessions = get_db_sessions(limit=5)
-            
-            # Check if there was an error getting sessions
-            if sessions and isinstance(sessions, list) and len(sessions) > 0 and "error" in sessions[0]:
-                return {"status": "error", "message": f"Error getting sessions: {sessions[0].get('error')}"}
-            
-            # Get events for each session (limited to 3 per session)
-            session_data = []
-            for session in sessions:
-                try:
-                    if isinstance(session, dict):
-                        app_name = session.get("app_name")
-                        user_id = session.get("user_id")
-                        session_id = session.get("id")
-                        
-                        if app_name and user_id and session_id:
-                            events = get_session_events(app_name, user_id, session_id, limit=3)
-                            
-                            # Serialize the state to a string if it's not already
-                            if "state" in session and not isinstance(session["state"], str):
-                                import json
-                                try:
-                                    session["state"] = json.dumps(session["state"])
-                                except:
-                                    session["state"] = str(session["state"])
-                            
-                            session_data.append({
-                                "session": {
-                                    "app_name": app_name,
-                                    "user_id": user_id,
-                                    "session_id": session_id,
-                                    "created": session.get("create_time"),
-                                    "updated": session.get("update_time")
-                                },
-                                "events_count": len(events)
-                            })
-                except Exception as session_error:
-                    session_data.append({
-                        "error": str(session_error),
-                        "session": session
-                    })
-            
-            return {
-                "status": "ok",
-                "data": {
-                    "sessions_count": len(sessions),
-                    "sessions": session_data
-                }
-            }
-        except Exception as e:
-            import traceback
-            return {
-                "status": "error", 
-                "message": str(e),
-                "traceback": traceback.format_exc()
-            }
-    
-    @app.get("/config")
-    async def get_config():
-        """
-        Return the current configuration for debugging
-        """
-        db = get_db()
-        return {
-            "environment": "development" if settings.is_dev_mode else "production",
-            "session_storage": "sqlite" if db.is_dev else "vertex_ai",
-            "session_db_url": db.url,
-            "reasoning_engine_id": settings.reasoning_engine_id,
-            "allowed_origins": settings.allowed_origins,
-            "app_name": settings.app_name
-        }
-    
-    # Direct API endpoints for tool testing
-    class ReminderRequest(BaseModel):
-        user_id: str
-        reminder: str
-        session_id: str = None
-        
-    class PreferenceRequest(BaseModel):
-        user_id: str
-        preference_name: str
-        preference_value: Any
-        session_id: str = None
-    
-    @app.post("/api/tools/add_reminder")
-    async def tool_add_reminder(request: ReminderRequest):
-        """Test endpoint to directly use the add_reminder tool"""
-        session_service = get_session_service(app)
-        
-        try:
-            # Find or create a session
-            session, actual_session_id, is_new_session = await find_or_create_session(
-                session_service, 
-                request.user_id,
-                request.session_id
-            )
-            
-            # Create a mock tool context
-            from google.adk.agents.invocation_context import InvocationContext
-            from google.adk.tools.tool_context import ToolContext
-            
-            # Build a mock invocation context - this is more complete now
-            class MockInvocationContext:
-                def __init__(self, session):
-                    self.session = session
-                    self.user_event = None
-                    self.__pydantic_fields_set__ = set()
-                    self.app_name = APP_NAME
-                    self.user_id = request.user_id
-                    self.session_id = actual_session_id
-                    self.artifact_service = None
-                    self.memory_service = None
-                    self.session_service = session_service
-            
-            invocation_context = MockInvocationContext(session)
-            tool_context = ToolContext(invocation_context)
-            
-            # Call the tool directly
-            result = add_reminder_tool.run(request.reminder, tool_context)
-            
-            # For tools that mutate state, we need to manually add the event to the session
-            # In the real ADK flow, this would be done by the tool's state_delta
-            # But for our direct API access, we need to do it manually
-            actions = EventActions(state_delta={"user:reminders": tool_context.state.get("user:reminders", [])})
-            update_event = Event(
-                author="system",
-                invocation_id="direct_tool_add_reminder",
-                actions=actions,
-                content=Content(parts=[Part(text=f"Added reminder: {request.reminder}")])
-            )
-            session_service.append_event(session, update_event)
-            
-            # Get the updated session after the tool call
-            updated_session = session_service.get_session(
-                app_name=APP_NAME,
-                user_id=request.user_id,
-                session_id=actual_session_id
-            )
-            
-            # Return the tool result and updated session state
-            return {
-                "status": "success",
-                "tool_result": result,
-                "user_id": request.user_id,
-                "session_id": actual_session_id,
-                "reminder_count": len(updated_session.state.get("user:reminders", [])),
-                "is_new_session": is_new_session
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to add reminder: {str(e)}")
-    
-    @app.get("/api/tools/view_reminders/{user_id}")
-    async def tool_view_reminders(user_id: str, session_id: str = None):
-        """Test endpoint to directly use the view_reminders tool"""
-        session_service = get_session_service(app)
-        
-        try:
-            # Find or create a session
-            session, actual_session_id, is_new_session = await find_or_create_session(
-                session_service, 
-                user_id,
-                session_id
-            )
-            
-            # Create a mock tool context
-            from google.adk.agents.invocation_context import InvocationContext
-            from google.adk.tools.tool_context import ToolContext
-            
-            # Build a mock invocation context - this is more complete now
-            class MockInvocationContext:
-                def __init__(self, session):
-                    self.session = session
-                    self.user_event = None
-                    self.__pydantic_fields_set__ = set()
-                    self.app_name = APP_NAME
-                    self.user_id = user_id
-                    self.session_id = actual_session_id
-                    self.artifact_service = None
-                    self.memory_service = None
-                    self.session_service = session_service
-            
-            invocation_context = MockInvocationContext(session)
-            tool_context = ToolContext(invocation_context)
-            
-            # Call the tool directly
-            result = view_reminders_tool.run(tool_context)
-            
-            # Return the tool result
-            return {
-                "status": "success",
-                "tool_result": result,
-                "user_id": user_id,
-                "session_id": actual_session_id,
-                "is_new_session": is_new_session
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to view reminders: {str(e)}")
-    
-    @app.post("/api/tools/update_preference")
-    async def tool_update_preference(request: PreferenceRequest):
-        """Test endpoint to directly use the update_preference tool"""
-        session_service = get_session_service(app)
-        
-        try:
-            # Find or create a session
-            session, actual_session_id, is_new_session = await find_or_create_session(
-                session_service, 
-                request.user_id,
-                request.session_id
-            )
-            
-            # Create a mock tool context
-            from google.adk.agents.invocation_context import InvocationContext
-            from google.adk.tools.tool_context import ToolContext
-            
-            # Build a mock invocation context - this is more complete now
-            class MockInvocationContext:
-                def __init__(self, session):
-                    self.session = session
-                    self.user_event = None
-                    self.__pydantic_fields_set__ = set()
-                    self.app_name = APP_NAME
-                    self.user_id = request.user_id
-                    self.session_id = actual_session_id
-                    self.artifact_service = None
-                    self.memory_service = None
-                    self.session_service = session_service
-            
-            invocation_context = MockInvocationContext(session)
-            tool_context = ToolContext(invocation_context)
-            
-            # Call the tool directly
-            result = update_preference_tool.run(
-                request.preference_name, 
-                request.preference_value, 
-                tool_context
-            )
-            
-            # For tools that mutate state, we need to manually add the event to the session
-            state_key = f"user:{request.preference_name}"
-            actions = EventActions(state_delta={state_key: tool_context.state.get(state_key)})
-            update_event = Event(
-                author="system",
-                invocation_id="direct_tool_update_preference",
-                actions=actions,
-                content=Content(parts=[Part(text=f"Updated preference: {request.preference_name}")])
-            )
-            session_service.append_event(session, update_event)
-            
-            # Get the updated session after the tool call
-            updated_session = session_service.get_session(
-                app_name=APP_NAME,
-                user_id=request.user_id,
-                session_id=actual_session_id
-            )
-            
-            # Return the tool result and updated state
-            return {
-                "status": "success",
-                "tool_result": result,
-                "user_id": request.user_id,
-                "session_id": actual_session_id,
-                "updated_preference": {
-                    "name": request.preference_name,
-                    "value": updated_session.state.get(f"user:{request.preference_name}")
-                },
-                "is_new_session": is_new_session
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update preference: {str(e)}")
+        """Simple health check endpoint for monitoring"""
+        return {"status": "ok", "env": "production"}
     
     return app
 
 app = create_app()
 
+async def maybe_add_session_to_memory(
+    session_service: SessionService, 
+    memory_service, 
+    user_id: str, 
+    session_id: str,
+    latest_message: str
+) -> None:
+    """
+    Determine if session should be added to memory and add it if appropriate.
+    
+    Args:
+        session_service: Session service instance
+        memory_service: Memory service instance (can be None)
+        user_id: User ID
+        session_id: Session ID
+        latest_message: The latest message text
+    """
+    # Skip if no memory service available
+    if not memory_service:
+        return
+    
+    try:
+        # Get the current session
+        session = session_service.get_session(
+            app_name=get_effective_app_name(),
+            user_id=user_id,
+            session_id=session_id
+        )
+        
+        # Determine if this session contains knowledge worth saving to memory
+        should_save = _should_save_session_to_memory(session, latest_message)
+        
+        if should_save:
+            try:
+                await memory_service.add_session_to_memory(session)
+            except Exception as upload_error:
+                # Memory upload failed but search is still functional
+                pass
+        
+    except Exception as e:
+        # Could not process session for memory
+        pass
+
+def _should_save_session_to_memory(session: Session, latest_message: str) -> bool:
+    """
+    Determine if a session contains valuable information worth saving to memory.
+    
+    Args:
+        session: The session to evaluate
+        latest_message: The latest message text
+        
+    Returns:
+        bool: True if session should be saved to memory
+    """
+    # Save to memory if session has significant interactions
+    turn_count = session.state.get("conversation_turn_count", 0)
+    
+    # Always save sessions with multiple turns
+    if turn_count >= 3:
+        return True
+    
+    # Save if user added/updated preferences or reminders
+    reminders = session.state.get("user:reminders", [])
+    has_reminders = len(reminders) > 0
+    
+    # Save if message indicates important information
+    important_keywords = [
+        "remember", "important", "project", "goal", "preference", 
+        "reminder", "schedule", "meeting", "deadline", "plan"
+    ]
+    has_important_content = any(keyword in latest_message.lower() for keyword in important_keywords)
+    
+    return has_reminders or has_important_content
+
 if __name__ == "__main__":
     # Default to port 8080 (used by Cloud Run)
-    # You can override this with PORT environment variable
     port = int(os.environ.get("PORT", 8080))
-    print(f"Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
