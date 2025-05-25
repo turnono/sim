@@ -180,8 +180,7 @@ async def find_or_create_session(
     
     return session, session_id, True
 
-# Patch the ADK to use our VertexAiRagMemoryService instead of InMemoryMemoryService
-# This must be done before importing get_fast_api_app
+# Create Vertex AI RAG Memory Service - cleaner approach
 def create_vertex_memory_service():
     """Create Vertex AI RAG Memory Service using existing RAG corpus."""
     import os
@@ -195,7 +194,7 @@ def create_vertex_memory_service():
         return InMemoryMemoryService()
     
     try:
-        # Initialize Vertex AI with proper credentials (same as successful test script)
+        # Initialize Vertex AI with proper credentials
         import vertexai
         from google.oauth2 import service_account
         
@@ -228,23 +227,27 @@ def create_vertex_memory_service():
         )
         return memory_service
     except Exception as e:
+        print(f"Failed to create VertexAiRagMemoryService: {e}")
         from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
         return InMemoryMemoryService()
 
-# Monkey patch the InMemoryMemoryService class before ADK imports it
+# TEMPORARY WORKAROUND: Monkey patch until ADK supports memory service configuration
+# The ADK's get_fast_api_app() hardcodes InMemoryMemoryService, so we need to patch it
+# TODO: Remove this when ADK adds memory_service parameter to get_fast_api_app()
 import google.adk.memory.in_memory_memory_service
-original_InMemoryMemoryService = google.adk.memory.in_memory_memory_service.InMemoryMemoryService
+import google.adk.cli.fast_api
 
-class PatchedMemoryService:
+# Store original for potential restoration
+_original_InMemoryMemoryService = google.adk.memory.in_memory_memory_service.InMemoryMemoryService
+
+class _MemoryServiceProxy:
+    """Proxy class that returns our configured memory service instead of InMemoryMemoryService"""
     def __new__(cls, *args, **kwargs):
         return create_vertex_memory_service()
 
-# Replace the class in the module
-google.adk.memory.in_memory_memory_service.InMemoryMemoryService = PatchedMemoryService
-
-# Also patch the import in the CLI module
-import google.adk.cli.fast_api
-google.adk.cli.fast_api.InMemoryMemoryService = PatchedMemoryService
+# Apply the patch
+google.adk.memory.in_memory_memory_service.InMemoryMemoryService = _MemoryServiceProxy
+google.adk.cli.fast_api.InMemoryMemoryService = _MemoryServiceProxy
 
 from google.adk.cli.fast_api import get_fast_api_app
 
@@ -253,6 +256,7 @@ def create_app():
     default_agent = create_agent()
     
     # Create the FastAPI app with session_db_url for VertexAiSessionService
+    # Note: Memory service is configured via monkey patch above due to ADK limitations
     app: FastAPI = get_fast_api_app(
         agent_dir=AGENT_DIR,
         session_db_url=SESSION_DB_URL,  # This will trigger VertexAiSessionService creation
