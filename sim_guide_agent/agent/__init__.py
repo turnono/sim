@@ -29,7 +29,8 @@ from sim_guide_agent.agent.core import (
 )
 
 from sim_guide_agent.agent.state import (
-    initialize_session_state
+    initialize_session_state,
+    migrate_existing_session
 )
 
 # Export all agent components
@@ -45,5 +46,6 @@ __all__ = [
     'root_agent',
     
     # State management
-    'initialize_session_state'
+    'initialize_session_state',
+    'migrate_existing_session'
 ] 

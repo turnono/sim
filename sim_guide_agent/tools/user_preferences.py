@@ -17,6 +17,7 @@ class UpdateUserPreferenceTool(BaseTool):
             description="Update a user preference in the session state with proper prefixing."
         )
     
+    @handle_tool_error
     def run(
         self, 
         preference_name: str, 
@@ -34,32 +35,50 @@ class UpdateUserPreferenceTool(BaseTool):
         Returns:
             Dict with status information about the update
         """
-        # Always prefix user preferences with "user:"
-        state_key = f"user:{preference_name}"
+        # Validate inputs
+        if not preference_name or not preference_name.strip():
+            raise ToolError(
+                ToolErrorType.VALIDATION_ERROR,
+                "Preference name cannot be empty",
+                {"preference_name": preference_name}
+            )
+        
+        # Always prefix user preferences with "profile:" (Vertex AI filters "user:" namespace)
+        state_key = f"profile:{preference_name.strip()}"
         
         # Check if there's a change
-        old_value = tool_context.state.get(state_key, None)
+        old_value = safe_state_get(tool_context, state_key, None)
         if old_value == preference_value:
-            return {
-                "action": "update_user_preference",
-                "status": "unchanged",
-                "message": f"Preference '{preference_name}' already set to '{preference_value}'",
-                "preference_name": preference_name,
-                "value": preference_value
-            }
+            return create_success_response(
+                action="update_user_preference",
+                message=f"Preference '{preference_name}' already set to '{preference_value}'",
+                data={
+                    "preference_name": preference_name,
+                    "value": preference_value,
+                    "changed": False
+                }
+            )
         
-        # Update state directly
-        tool_context.state[state_key] = preference_value
-        tool_context.state["temp:last_preference_update"] = time.time()
+        # Update state safely with persistence marking
+        safe_state_set_with_persistence_flag(tool_context, state_key, preference_value, f"Updated user preference: {preference_name}")
+        safe_state_set(tool_context, "temp:last_preference_update", time.time())
         
-        return {
-            "action": "update_user_preference",
-            "status": "updated",
-            "message": f"Updated preference '{preference_name}' from '{old_value}' to '{preference_value}'",
-            "preference_name": preference_name,
-            "old_value": old_value,
-            "new_value": preference_value
+        # Create state changes for persistence
+        state_changes = {
+            state_key: preference_value
         }
+        
+        return create_success_response_with_state_changes(
+            action="update_user_preference",
+            message=f"Updated preference '{preference_name}' from '{old_value}' to '{preference_value}'",
+            data={
+                "preference_name": preference_name,
+                "old_value": old_value,
+                "new_value": preference_value,
+                "changed": True
+            },
+            state_changes=state_changes
+        )
 
 
 class GetUserPreferencesTool(BaseTool):
@@ -74,6 +93,7 @@ class GetUserPreferencesTool(BaseTool):
             description="Get all user preferences from the session state."
         )
     
+    @handle_tool_error
     def run(self, tool_context: ToolContext) -> Dict[str, Any]:
         """
         Get all user preferences from the session state.
@@ -84,23 +104,33 @@ class GetUserPreferencesTool(BaseTool):
         Returns:
             Dict with all user preferences
         """
-        # Get all state keys that start with "user:"
-        preferences = {
-            k.replace("user:", ""): v 
-            for k, v in tool_context.state.items() 
-            if k.startswith("user:")
-        }
+        # Safely access state
+        validate_tool_context(tool_context)
         
-        # Update state directly
-        tool_context.state["temp:last_preferences_access"] = time.time()
+        try:
+            # Get all state keys that start with "profile:" (new namespace to avoid Vertex AI filtering)
+            preferences = {
+                k.replace("profile:", ""): v 
+                for k, v in tool_context.state.items() 
+                if k.startswith("profile:")
+            }
+        except Exception as e:
+            raise ToolError(
+                ToolErrorType.STATE_ACCESS_ERROR,
+                f"Failed to retrieve user preferences: {str(e)}"
+            )
         
-        return {
-            "action": "get_user_preferences",
-            "status": "success",
-            "message": f"Retrieved {len(preferences)} user preferences",
-            "preferences": preferences,
-            "preference_count": len(preferences)
-        }
+        # Update access time
+        safe_state_set(tool_context, "temp:last_preferences_access", time.time())
+        
+        return create_success_response(
+            action="get_user_preferences",
+            message=f"Retrieved {len(preferences)} user preferences",
+            data={
+                "preferences": preferences,
+                "preference_count": len(preferences)
+            }
+        )
 
 
 # Create instances of the tools

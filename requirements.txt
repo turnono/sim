@@ -1,13 +1,25 @@
-google-adk[vertexai]
-google-cloud-firestore
-dateparser
-pydantic
-google-genai
-google-cloud-storage
-google-cloud-aiplatform[reasoningengine]
-vertexai
-cloudpickle
-sqlalchemy>=2.0.0
+# Core Google ADK and AI Platform dependencies
+google-adk==1.0.0
+google-cloud-aiplatform[reasoningengine]==1.93.0
+vertexai==1.43.0
+google-generativeai==0.8.5
+
+# Google Cloud services
+google-cloud-firestore==2.20.2
+google-cloud-storage==2.19.0
+google-cloud-core==2.4.3
+
+# Core application dependencies
+pydantic==2.11.4
+pydantic-settings==2.9.1
 python-dotenv==1.1.0
-google-generativeai
-litellm
+sqlalchemy==2.0.36
+
+# Utility libraries
+dateparser==1.2.1
+cloudpickle==3.1.1
+litellm==1.70.0
+
+# FastAPI and web dependencies (if not already included via google-adk)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0

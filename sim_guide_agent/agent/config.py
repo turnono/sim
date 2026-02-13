@@ -15,17 +15,21 @@ AGENT_SUMMARY = (
 )
 
 # Initial state for new users
+# Note: Vertex AI filters 'user:' and 'app:' namespaces, so we use 'profile:' and 'system:' instead
 DEFAULT_USER_PREFERENCES = {
-    "user:name": "Abdullah",
-    "user:timezone": "UTC+2",  # South Africa
-    "user:theme_preference": "system",  # light, dark, or system
-    "user:notification_preference": True,
-    "user:focus_areas": ["ai", "technology", "wealth_creation", "personal_growth"],
-    "user:reminders": []  # Initialize empty reminders list
+    "profile:name": "Abdullah",
+    "profile:timezone": "UTC+2",  # South Africa
+    "profile:theme_preference": "system",  # light, dark, or system
+    "profile:notification_preference": True,
+    "profile:focus_areas": ["ai", "technology", "wealth_creation", "personal_growth"],
+    "profile:reminders": [],  # Initialize empty reminders list
+    "profile:language_preference": "en",  # New preference for testing migration
+    "profile:conversation_style": "balanced"  # New preference: concise, detailed, balanced
 }
 
 # Application-level state (shared across all users)
+# Note: Using 'system:' instead of 'app:' to avoid Vertex AI filtering
 DEFAULT_APP_STATE = {
-    "app:version": "1.0.0",
-    "app:last_updated": "2023-04-30",
+    "system:version": "1.0.0",
+    "system:last_updated": "2023-04-30",
 } 

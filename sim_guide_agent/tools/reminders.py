@@ -52,8 +52,8 @@ class AddReminderTool(BaseTool):
     ) -> Dict[str, Any]:
         """Add a new reminder to the user's list."""
         
-        # Get current reminders
-        reminders = tool_context.state.get("user:reminders", [])
+        # Get current reminders (using new profile: namespace)
+        reminders = tool_context.state.get("profile:reminders", [])
         
         # Create new reminder with metadata
         new_reminder = create_reminder(
@@ -65,9 +65,9 @@ class AddReminderTool(BaseTool):
         # Add to list
         reminders.append(new_reminder)
         
-        # Update state
-        tool_context.state["user:reminders"] = reminders
-        tool_context.state["temp:last_reminder_update"] = time.time()
+        # Update state safely (using new profile: namespace)
+        safe_state_set(tool_context, "profile:reminders", reminders)
+        safe_state_set(tool_context, "temp:last_reminder_update", time.time())
         
         return {
             "action": "add_reminder",
@@ -89,8 +89,8 @@ class ViewRemindersTools(BaseTool):
     def run(self, tool_context: ToolContext) -> Dict[str, Any]:
         """View all current reminders."""
         
-        # Get current reminders
-        reminders = tool_context.state.get("user:reminders", [])
+        # Get current reminders (using new profile: namespace)
+        reminders = tool_context.state.get("profile:reminders", [])
         
         # Update access time
         tool_context.state["temp:last_reminder_access"] = time.time()
@@ -135,8 +135,8 @@ class UpdateReminderTool(BaseTool):
     ) -> Dict[str, Any]:
         """Update an existing reminder."""
         
-        # Get current reminders
-        reminders = tool_context.state.get("user:reminders", [])
+        # Get current reminders (using new profile: namespace)
+        reminders = tool_context.state.get("profile:reminders", [])
         
         if not reminders:
             return {
@@ -166,9 +166,9 @@ class UpdateReminderTool(BaseTool):
             # Convert string reminder to dict format
             reminders[reminder_index] = create_reminder(new_text)
         
-        # Update state
-        tool_context.state["user:reminders"] = reminders
-        tool_context.state["temp:last_reminder_update"] = time.time()
+        # Update state safely (using new profile: namespace)
+        safe_state_set(tool_context, "profile:reminders", reminders)
+        safe_state_set(tool_context, "temp:last_reminder_update", time.time())
         
         old_text = old_reminder.get("text", old_reminder) if isinstance(old_reminder, dict) else old_reminder
         
@@ -227,8 +227,8 @@ class CompleteReminderTool(BaseTool):
     ) -> Dict[str, Any]:
         """Complete or remove a reminder."""
         
-        # Get current reminders
-        reminders = tool_context.state.get("user:reminders", [])
+        # Get current reminders (using new profile: namespace)
+        reminders = tool_context.state.get("profile:reminders", [])
         
         if not reminders:
             return {
@@ -271,9 +271,9 @@ class CompleteReminderTool(BaseTool):
             message = f"Completed reminder {reminder_index + 1}: '{reminder_text}'"
             status_action = "completed"
         
-        # Update state
-        tool_context.state["user:reminders"] = reminders
-        tool_context.state["temp:last_reminder_update"] = time.time()
+        # Update state safely (using new profile: namespace)
+        safe_state_set(tool_context, "profile:reminders", reminders)
+        safe_state_set(tool_context, "temp:last_reminder_update", time.time())
         
         return {
             "action": "complete_reminder",

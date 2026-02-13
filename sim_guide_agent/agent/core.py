@@ -21,6 +21,8 @@ from typing import Optional
 from google.adk.agents import LlmAgent
 from google.adk.sessions import Session
 from google.adk.tools import load_memory
+from google.adk.tools.load_memory_tool import load_memory_tool
+from google.adk.tools.preload_memory_tool import preload_memory_tool
 
 from sim_guide_agent.models import DEFAULT_MODEL
 from sim_guide_agent.prompts import ROOT_AGENT_PROMPT_TEMPLATE
@@ -33,15 +35,16 @@ from sim_guide_agent.callbacks import (
     before_tool_callback,
     after_tool_callback
 )
-from sim_guide_agent.tools import (
-    update_preference_tool, 
-    get_preferences_tool, 
-    session_summary_tool,
-    add_reminder_tool, 
-    view_reminders_tool,
-    update_reminder_tool,
-    complete_reminder_tool
+from sim_guide_agent.tools.user_preferences_adk import (
+    update_preference_tool_adk,
+    get_preferences_tool_adk
 )
+from sim_guide_agent.tools.reminders_adk import (
+    add_reminder_tool_adk,
+    view_reminders_tool_adk,
+    complete_reminder_tool_adk
+)
+from sim_guide_agent.tools.session_summary_adk import session_summary_tool_adk
 from sim_guide_agent.agent.config import DEFAULT_USER_PREFERENCES
 
 
@@ -57,7 +60,7 @@ def get_dynamic_instruction(session: Session) -> str:
         Formatted instruction string
     """
     # Get the user's name from state, with fallback to default
-    user_name = session.state.get("user:name", DEFAULT_USER_PREFERENCES["user:name"])
+    user_name = session.state.get("profile:name", DEFAULT_USER_PREFERENCES["profile:name"])
     
     # Format the template with the dynamic values
     return ROOT_AGENT_PROMPT_TEMPLATE.format(
@@ -81,7 +84,7 @@ def create_agent(session: Optional[Session] = None) -> LlmAgent:
     else:
         # When no session is available (e.g., at initial load), use the default
         instruction = ROOT_AGENT_PROMPT_TEMPLATE.format(
-            user_name=DEFAULT_USER_PREFERENCES["user:name"]
+            user_name=DEFAULT_USER_PREFERENCES["profile:name"]
         )
     
     # Create the agent with the determined instruction and callback pattern
@@ -92,17 +95,17 @@ def create_agent(session: Optional[Session] = None) -> LlmAgent:
         instruction=instruction,
         output_key="sim_guide_agent_output",
         tools=[
-            # State management tools
-            update_preference_tool, 
-            get_preferences_tool, 
-            session_summary_tool,
-            # Reminder tools
-            add_reminder_tool, 
-            view_reminders_tool,
-            update_reminder_tool,
-            complete_reminder_tool,
-            # Memory tool for cross-session knowledge retrieval
-            load_memory
+            # State management tools (ADK-compliant)
+            update_preference_tool_adk, 
+            get_preferences_tool_adk, 
+            session_summary_tool_adk,
+            # Reminder tools (ADK-compliant)
+            add_reminder_tool_adk, 
+            view_reminders_tool_adk,
+            complete_reminder_tool_adk,
+            # Memory tools for cross-session conversation memory
+            load_memory_tool,
+            preload_memory_tool
         ],
         # Agent-level callbacks
         before_agent_callback=before_agent_callback,
